@@ -1,25 +1,39 @@
 from lxml import etree
 import time
-import polars as pl
+import pandas as pd
+import seaborn as sns
 import sys
-import random
+import matplotlib.pyplot as plt
 import numpy as np
 
 def main():
     # Attempt to grab the files from Tx and Rx
+    txFile = None
+    rxFile = None
     try:
-       rxFile = sys.argv[1]
-       txFile = sys.argv[2]
+        args = sys.argv[1:]
+
+        if len(args) == 2:
+        # pure Tx file, no MAC needed
+            txFile = args[0]
+            rxFile = args[1]
+
+        elif len(args) == 3:
+        # combined Tx file, filter by MAC
+            txList, _ = separateByAddress(etree.parse(args[0]).getroot(), args[2])
+            rxFile = args[1]
+
     except IndexError:
-       print("Error: Please specify a pdml file for both a transmitter and a receiver.")
+       print("Error: Please specify a pdml file for both a transmitter and a receiver, and a MAC or IPv6 address, if applicable.")
        sys.exit(1)
     
     print("Parsing Rx File...")
     rxTree = etree.parse(rxFile)
     print("Done!")
-    print("Parsing Tx File...")
-    txTree = etree.parse(txFile)
-    print("Done!")
+    if txFile:
+        print("Parsing Tx File...")
+        txList = list(etree.parse(txFile).getroot())
+        print("Done!")
     print("Building Rx map...")
     rxMap = buildRxMap(rxTree.getroot())
     print("Done!")
@@ -30,7 +44,7 @@ def main():
     initialReqs = {'frame.len', 'frame.time_delta_displayed', 'frame.time_epoch', 'frame.number', 'j2735.messageId', 'frame.len'}
     
     # Iteration Matching Test
-    for packet in txTree.getroot():
+    for packet in txList:
         # Obtain necessary starting fields from Tx packet
         txFields = get_field_values(packet, initialReqs)
         txType = txFields['j2735.messageId']
@@ -86,6 +100,25 @@ def main():
     calculateLatency(packetMatches)
     calculateIPG(rxTimestamps)
     calculateThroughput(packetLengths)
+
+def separateByAddress(tree, txMac):
+    matchesAddress = []
+    notMatchesAddress = []
+    
+    macFields = {'ipv6.src', 'wlan.sa'}
+    
+    for packet in tree:
+        fields = get_field_values(packet, macFields)
+        srcMac = fields.get('ipv6.src') or fields.get('wlan.sa')
+        
+        if srcMac is None:
+            continue
+        if srcMac.lower() == txMac.lower():
+            matchesAddress.append(packet)
+        else:
+            notMatchesAddress.append(packet)
+    
+    return matchesAddress, notMatchesAddress
 
 def buildRxMap(rxTree):
     # Build a map of keys that store received packets with matching characteristics
@@ -227,8 +260,12 @@ def findBestMatch(txPacket, matches, cutoffTime):
     else:
         return None
 
-def calculatePER(txPackets, windowSize=100):
+def calculatePER(txPackets, windowSize=50):
+    if(len(txPackets) == 0):
+        print("No packets found, aborting PER calculation!")
+        return None
     windows = []
+    initialTime = txPackets[0]
     for i in range(len(txPackets)-windowSize + 1):
         window = txPackets[i : i + windowSize]
         windowTime = window[-1][0]
@@ -236,9 +273,20 @@ def calculatePER(txPackets, windowSize=100):
         per = losses / windowSize * 100
         windows.append((windowTime, per))
         print(f"  t={windowTime:.3f}  PER={per:.1f}%  ({losses}/{windowSize} lost)")
+    
+    timeList, perList = map(list, zip(*windows))
+    per_df = pd.DataFrame({'time': timeList, 'PER': perList})
+    sns.lineplot(data=per_df, x='time', y='PER')
+    plt.show()
+    
 
 def calculateLatency(packetMatches):
+    if(len(packetMatches) == 0):
+        print("No packets found, aborting Latency calculation!")
+        return None
+    TYPE_NAMES = {'18': 'MAP', '19': 'SPAT', '20': 'BSM', '31': 'TIM'}
     latenciesByType = {'18': [], '19': [], '20': [], '31': []}
+    latency_data = []
     for (txPacket, _, latency, txType) in packetMatches:
         latenciesByType[txType].append(latency * 1000) 
 
@@ -246,6 +294,8 @@ def calculateLatency(packetMatches):
         if len(latencies) == 0:
             continue
         latencyNP = np.array(latencies)
+        for latency in latencies:
+            latency_data.append({'latency': latency, 'type': TYPE_NAMES.get(msgId)})
         print(f"\n--- Latency Stats for message type {msgId}: ({len(latencyNP)} matched packets) ---")
         print(f"  Mean   : {np.mean(latencyNP):.3f} ms")
         print(f"  Median : {np.median(latencyNP):.3f} ms")
@@ -254,8 +304,18 @@ def calculateLatency(packetMatches):
         print(f"  Min    : {np.min(latencyNP):.3f} ms")
         print(f"  Max    : {np.max(latencyNP):.3f} ms")
         print(f"  Std Dev: {np.std(latencyNP):.3f} ms")
+    
+    latency_df = pd.DataFrame(latency_data)
+    fig, ax = plt.subplots(figsize=(8, 5))
+    sns.ecdfplot(data=latency_df, x='latency', hue='type', ax=ax, linewidth=2)
+    ax.set_title("Latency CDF by message type")
+    ax.set_xlabel('Latency (ms)')
+    ax.set_ylabel('Cumulative proportion')
+    plt.show()
 
 def calculateIPG(packetTimestamps):
+    TYPE_NAMES = {'18': 'MAP', '19': 'SPAT', '20': 'BSM', '31': 'TIM'}
+    ipg_data = []
     for msgType, packets in packetTimestamps.items():
         if len(packets) < 2:
             continue
@@ -263,6 +323,8 @@ def calculateIPG(packetTimestamps):
             timestamps = np.array(packets)
             timestamps.sort()
             gaps = np.diff(timestamps) * 1000
+            for packetGap in gaps:
+                ipg_data.append({'IPG': packetGap, 'type': TYPE_NAMES.get(msgType)})
             print(f"\n--- IPG Stats for message type {msgType}: ---")
             print(f"  Mean   : {np.mean(gaps):.3f} ms")
             print(f"  Median : {np.median(gaps):.3f} ms")
@@ -271,6 +333,13 @@ def calculateIPG(packetTimestamps):
             print(f"  Min    : {np.min(gaps):.3f} ms")
             print(f"  Max    : {np.max(gaps):.3f} ms")
             print(f"  Std Dev: {np.std(gaps):.3f} ms")
+    ipg_df = pd.DataFrame(ipg_data)
+    fig, ax = plt.subplots(figsize=(8, 5))
+    sns.ecdfplot(data=ipg_df, x='IPG', hue='type', ax=ax, linewidth=2)
+    ax.set_title("Inter-packet Gap (IPG) by message type")
+    ax.set_xlabel('IPG (ms)')
+    ax.set_ylabel('Cumulative proportion')
+    plt.show()
 
 def calculateThroughput(packetLengths, winSeconds=5):
     if not packetLengths:
@@ -281,11 +350,13 @@ def calculateThroughput(packetLengths, winSeconds=5):
 
     winStart = tStart
     throughputs = []
+    windowTimes = []
 
     while winStart + winSeconds <= tEnd:
         winEnd = winStart + winSeconds
         bytes = sum(length for time, length in packetLengths if winStart <= time < winEnd)
         throughputs.append((bytes * 8) / winSeconds)
+        windowTimes.append(winStart - tStart)
         winStart += winSeconds
     
     if throughputs:
@@ -294,6 +365,23 @@ def calculateThroughput(packetLengths, winSeconds=5):
         print(f"  Mean : {np.mean(arr):.2f} bps")
         print(f"  Max  : {np.max(arr):.2f} bps")
         print(f"  Min  : {np.min(arr):.2f} bps")
+
+    throughput_df = pd.DataFrame({
+        'time': windowTimes,
+        'throughput': throughputs
+    })
+
+    fig, ax = plt.subplots(figsize=(10, 5))
+
+    sns.lineplot(data=throughput_df, x='time', y='throughput', ax=ax, linewidth=2, drawstyle='steps-post')
+
+    ax.set_xlabel('Time (s)')
+    ax.set_ylabel('Throughput (bps)')
+    ax.set_title('Throughput over time (5s windows)')
+
+    plt.tight_layout()
+    plt.savefig('throughput.png', dpi=150)
+    plt.show()
 
 if __name__ == "__main__":
    main()
