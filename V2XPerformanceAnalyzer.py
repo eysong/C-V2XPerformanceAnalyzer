@@ -205,8 +205,9 @@ def matchBSM(txPacket, rxMap, cutoffTime=3):
     
     txFields = get_field_values(txPacket, BSMrequiredFields)
 
-    key = (make_key(txFields.get('j2735.msgCnt')), make_key(txFields.get('j2735.secMark')), 
-            make_key(txFields.get('j2735.id')))
+    key = (make_key(txFields.get('j2735.id')), 
+           make_key(txFields.get('j2735.msgCnt')), 
+           make_key(txFields.get('j2735.secMark')))
     
     matches = rxMap['20'].get(key, [])
 
@@ -260,15 +261,15 @@ def findBestMatch(txPacket, matches, cutoffTime):
     else:
         return None
 
-def calculatePER(txPackets, windowSize=50):
+def calculatePER(txPackets, windowSize=100):
     if(len(txPackets) == 0):
         print("No packets found, aborting PER calculation!")
         return None
     windows = []
-    initialTime = txPackets[0]
+    initialTime = txPackets[0][0]
     for i in range(len(txPackets)-windowSize + 1):
         window = txPackets[i : i + windowSize]
-        windowTime = window[-1][0]
+        windowTime = window[-1][0] - initialTime
         losses = sum(1 for _, received in window if received == False)
         per = losses / windowSize * 100
         windows.append((windowTime, per))
@@ -366,22 +367,22 @@ def calculateThroughput(packetLengths, winSeconds=5):
         print(f"  Max  : {np.max(arr):.2f} bps")
         print(f"  Min  : {np.min(arr):.2f} bps")
 
-    throughput_df = pd.DataFrame({
-        'time': windowTimes,
-        'throughput': throughputs
-    })
+    # throughput_df = pd.DataFrame({
+    #     'time': windowTimes,
+    #     'throughput': throughputs
+    # })
 
-    fig, ax = plt.subplots(figsize=(10, 5))
+    # fig, ax = plt.subplots(figsize=(10, 5))
 
-    sns.lineplot(data=throughput_df, x='time', y='throughput', ax=ax, linewidth=2, drawstyle='steps-post')
+    # sns.lineplot(data=throughput_df, x='time', y='throughput', ax=ax, linewidth=2, drawstyle='steps-post')
 
-    ax.set_xlabel('Time (s)')
-    ax.set_ylabel('Throughput (bps)')
-    ax.set_title('Throughput over time (5s windows)')
+    # ax.set_xlabel('Time (s)')
+    # ax.set_ylabel('Throughput (bps)')
+    # ax.set_title('Throughput over time (5s windows)')
 
-    plt.tight_layout()
-    plt.savefig('throughput.png', dpi=150)
-    plt.show()
+    # plt.tight_layout()
+    # plt.savefig('throughput.png', dpi=150)
+    # plt.show()
 
 if __name__ == "__main__":
    main()
