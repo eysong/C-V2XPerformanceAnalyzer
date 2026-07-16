@@ -5,6 +5,7 @@ import seaborn as sns
 import sys
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.backends.backend_pdf import PdfPages
 
 def main():
     # Attempt to grab the files from Tx and Rx
@@ -96,10 +97,19 @@ def main():
     packetTimeline = sorted(packetTimeline)
     
     # Perform final metric calculation and analysis
-    calculatePER(packetTimeline)
-    calculateLatency(packetMatches)
-    calculateIPG(rxTimestamps)
-    calculateThroughput(packetLengths)
+    # calculatePER(packetTimeline)
+    # calculateLatency(packetMatches)
+    # calculateIPG(rxTimestamps)
+    # calculateThroughput(packetLengths)
+    perFig, perValues  = calculatePER(packetTimeline)
+    latFig, latenciesByType = calculateLatency(packetMatches)
+    ipgFig = calculateIPG(rxTimestamps)
+    throughputs = calculateThroughput(packetLengths)
+
+    statsText = buildStatsText(packetMatches, packetLosses, latenciesByType,
+                               perValues, rxTimestamps, throughputs)
+
+    saveReport([perFig, latFig, ipgFig], statsText)
 
 def separateByAddress(tree, txMac):
     matchesAddress = []
@@ -277,8 +287,23 @@ def calculatePER(txPackets, windowSize=100):
     
     timeList, perList = map(list, zip(*windows))
     per_df = pd.DataFrame({'time': timeList, 'PER': perList})
-    sns.lineplot(data=per_df, x='time', y='PER')
-    plt.show()
+    per_df['smoothed'] = per_df['PER'].rolling(window=50, min_periods=1).mean()
+    fig, ax = plt.subplots(figsize=(12, 5))
+    
+    sns.lineplot(data=per_df, x='time', y='PER', ax=ax,
+                 linewidth=1, alpha=0.3, label='Raw PER')
+    sns.lineplot(data=per_df, x='time', y='smoothed', ax=ax,
+                 linewidth=2, label='Rolling avg')
+
+
+    ax.set_xlabel('Time (s)')
+    ax.set_ylabel('PER (%)')
+    ax.set_title(f'Packet Error Rate (window={windowSize} packets)')
+    ax.set_ylim(0, 100)
+    ax.legend()
+    plt.tight_layout()
+
+    return fig, perList
     
 
 def calculateLatency(packetMatches):
@@ -312,7 +337,7 @@ def calculateLatency(packetMatches):
     ax.set_title("Latency CDF by message type")
     ax.set_xlabel('Latency (ms)')
     ax.set_ylabel('Cumulative proportion')
-    plt.show()
+    return fig, latenciesByType
 
 def calculateIPG(packetTimestamps):
     TYPE_NAMES = {'18': 'MAP', '19': 'SPAT', '20': 'BSM', '31': 'TIM'}
@@ -340,7 +365,7 @@ def calculateIPG(packetTimestamps):
     ax.set_title("Inter-packet Gap (IPG) by message type")
     ax.set_xlabel('IPG (ms)')
     ax.set_ylabel('Cumulative proportion')
-    plt.show()
+    return fig
 
 def calculateThroughput(packetLengths, winSeconds=5):
     if not packetLengths:
@@ -366,6 +391,8 @@ def calculateThroughput(packetLengths, winSeconds=5):
         print(f"  Mean : {np.mean(arr):.2f} bps")
         print(f"  Max  : {np.max(arr):.2f} bps")
         print(f"  Min  : {np.min(arr):.2f} bps")
+    
+    return throughputs
 
     # throughput_df = pd.DataFrame({
     #     'time': windowTimes,
@@ -383,6 +410,92 @@ def calculateThroughput(packetLengths, winSeconds=5):
     # plt.tight_layout()
     # plt.savefig('throughput.png', dpi=150)
     # plt.show()
+
+
+def buildStatsText(packetMatches, packetLosses, latenciesByType,
+                   perValues, rxTimestamps, throughputs):
+    lines = []
+    TYPE_NAMES = {'18': 'MAP', '19': 'SPAT', '20': 'BSM', '31': 'TIM'}
+
+    def log(text=''):
+        lines.append(text)
+        print(text)
+
+    total = len(packetMatches) + len(packetLosses)
+    per = len(packetLosses) / total * 100 if total > 0 else 0
+
+    log("=== V2X Performance Analysis ===")
+    log()
+    log(f"Overall PER : {per:.2f}%")
+    log(f"Matched     : {len(packetMatches)}")
+    log(f"Lost        : {len(packetLosses)}")
+    log(f"Total       : {total}")
+
+    log()
+    log("=== Latency Stats ===")
+    for msgId, latencies in latenciesByType.items():
+        if not latencies:
+            continue
+        arr = np.array(latencies)
+        log()
+        log(f"--- {TYPE_NAMES[msgId]} ({len(arr)} packets) ---")
+        log(f"  Mean   : {np.mean(arr):.3f} ms")
+        log(f"  Median : {np.median(arr):.3f} ms")
+        log(f"  P95    : {np.percentile(arr, 95):.3f} ms")
+        log(f"  P99    : {np.percentile(arr, 99):.3f} ms")
+        log(f"  Std Dev: {np.std(arr):.3f} ms")
+        log(f"  Min    : {np.min(arr):.3f} ms")
+        log(f"  Max    : {np.max(arr):.3f} ms")
+
+    log()
+    log("=== IPG Stats ===")
+    for msgId, timestamps in rxTimestamps.items():
+        if len(timestamps) < 2:
+            continue
+        gaps = np.diff(sorted(timestamps)) * 1000
+        log()
+        log(f"--- {TYPE_NAMES[msgId]} ({len(gaps)} gaps) ---")
+        log(f"  Mean   : {np.mean(gaps):.3f} ms")
+        log(f"  Median : {np.median(gaps):.3f} ms")
+        log(f"  P95    : {np.percentile(gaps, 95):.3f} ms")
+        log(f"  P99    : {np.percentile(gaps, 99):.3f} ms")
+        log(f"  Std Dev: {np.std(gaps):.3f} ms")
+        log(f"  Min    : {np.min(gaps):.3f} ms")
+        log(f"  Max    : {np.max(gaps):.3f} ms")
+
+    if throughputs:
+        arr = np.array(throughputs)
+        log()
+        log("=== Throughput Stats ===")
+        log(f"  Mean : {np.mean(arr):.2f} bps")
+        log(f"  Max  : {np.max(arr):.2f} bps")
+        log(f"  Min  : {np.min(arr):.2f} bps")
+
+    return '\n'.join(lines)
+
+
+def saveReport(figures, statsText, outputPath='v2x_report.pdf'):
+    with PdfPages(outputPath) as pdf:
+
+        # split stats across multiple pages if needed
+        lines = statsText.split('\n')
+        linesPerPage = 60  # adjust this based on font size
+
+        for i in range(0, len(lines), linesPerPage):
+            chunk = '\n'.join(lines[i : i + linesPerPage])
+            fig, ax = plt.subplots(figsize=(8.5, 11))
+            ax.axis('off')
+            ax.text(0.05, 0.98, chunk, transform=ax.transAxes,
+                    fontsize=10, verticalalignment='top', fontfamily='monospace')
+            pdf.savefig(fig)
+            plt.close(fig)
+
+        # graphs — one per page
+        for f in figures:
+            pdf.savefig(f)
+            plt.close(f)
+
+    print(f"\nReport saved to {outputPath}")
 
 if __name__ == "__main__":
    main()
