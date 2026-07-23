@@ -6,6 +6,8 @@ import sys
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.backends.backend_pdf import PdfPages
+from pdf2docx import parse, Converter
+import folium
 
 def main():
     # Attempt to grab the files from Tx and Rx
@@ -42,13 +44,15 @@ def main():
     packetLosses = []
 
     # Get initial characteristics from each packet
-    initialReqs = {'frame.len', 'frame.time_delta_displayed', 'frame.time_epoch', 'frame.number', 'j2735.messageId', 'frame.len'}
+    initialReqs = {'frame.len', 'frame.time_delta_displayed', 'frame.time_epoch', 'frame.number', 'j2735.messageId', 'j2735.long_01', 'j2735.lat_03'}
     
     # Iteration Matching Test
     for packet in txList:
         # Obtain necessary starting fields from Tx packet
         txFields = get_field_values(packet, initialReqs)
-        txType = txFields['j2735.messageId']
+        txType = txFields.get('j2735.messageId')
+        if txType is None:
+            continue
         matchResult = None
         
         # Compare txType with each currently supported message ID
@@ -74,39 +78,67 @@ def main():
     rxTimestamps = {'18': [], '19': [], '20': [], '31': []}
     packetTimeline = []
     packetLengths = []
-    
+    mapPoints = []
     # Fill lists with necessary data for metric calculations
     for (packet, matchingPacket, latency, txType) in packetMatches:
         packetFields = get_field_values(packet, initialReqs)
         matchFields = get_field_values(matchingPacket, initialReqs)
-        
+
         packetTimeline.append((float(packetFields['frame.time_epoch']), True))
         
         rxTimestamps[txType].append(float(matchFields['frame.time_epoch']))
 
         packetLengths.append(((float(matchFields['frame.time_epoch'])), (int(matchFields['frame.len']))))
+
+        lat = packetFields.get('j2735.lat_03')
+        long = packetFields.get('j2735.long_01')
+        if lat is not None and long is not None:
+            lat = float(lat)
+            long = float(long)
+
+            lat /= 1e7
+            long /= 1e7
+            mapPoints.append((float(packetFields['frame.time_epoch']), lat, long, True))
     
     # Packet loss test and more data for PER
     for packet in packetLosses:
         packetFields = get_field_values(packet, initialReqs)
         
-        print("Tx packet "+ str(packetFields['frame.number'])+ " was lost")
+        # print("Tx packet "+ str(packetFields['frame.number'])+ " was lost")
         
         packetTimeline.append((float(packetFields['frame.time_epoch']), False))
 
+        lat = packetFields.get('j2735.lat_03')
+        long = packetFields.get('j2735.long_01')
+        if lat is not None and long is not None:
+            lat = float(lat)
+            long = float(long)
+
+            lat /= 1e7
+            long /= 1e7
+            mapPoints.append((float(packetFields['frame.time_epoch']), lat, long, False))
+
     packetTimeline = sorted(packetTimeline)
+    packetTimeline, trimmedCount = trimTrailingLosses(packetTimeline)
+
+    if trimmedCount > 0:
+        note = (f"NOTE: {trimmedCount} trailing lost packet(s) removed from analysis "
+            f"(receiver believed powered off at capture end).")
+        print(note)
     
+    # Final changes to points for map creation
+    rxLat = 39.13296
+    rxLong = -77.21377
+    mapPoints = sorted(mapPoints, key=lambda p: p[0])
+
     # Perform final metric calculation and analysis
-    # calculatePER(packetTimeline)
-    # calculateLatency(packetMatches)
-    # calculateIPG(rxTimestamps)
-    # calculateThroughput(packetLengths)
+    plotMap(mapPoints, rxLat, rxLong)
     perFig, perValues  = calculatePER(packetTimeline)
-    latFig, latenciesByType = calculateLatency(packetMatches)
-    ipgFig = calculateIPG(rxTimestamps)
+    latFig, latenciesByType, negativeFlag = calculateLatency(packetMatches)
+    ipgFig, outlierWarnIPG = calculateIPG(rxTimestamps)
     throughputs = calculateThroughput(packetLengths)
 
-    statsText = buildStatsText(packetMatches, packetLosses, latenciesByType,
+    statsText = buildStatsText(packetMatches, packetLosses, latenciesByType, negativeFlag, outlierWarnIPG,
                                perValues, rxTimestamps, throughputs)
 
     saveReport([perFig, latFig, ipgFig], statsText)
@@ -199,8 +231,7 @@ def get_field_values(packet, requiredFields):
     return result
     
 
-
-def matchTIM(txPacket, rxMap, cutoffTime=3):
+def matchTIM(txPacket, rxMap, cutoffTime=0.5):
     TIMrequiredFields = {'j2735.msgCnt', 'j2735.lat_03', 'j2735.long_01', 'frame.time_epoch'}
 
     txFields = get_field_values(txPacket, TIMrequiredFields)
@@ -210,7 +241,7 @@ def matchTIM(txPacket, rxMap, cutoffTime=3):
     matches = rxMap['31'].get(key, [])
     return findBestMatch(txPacket, matches, cutoffTime)
 
-def matchBSM(txPacket, rxMap, cutoffTime=3):
+def matchBSM(txPacket, rxMap, cutoffTime=1):
     BSMrequiredFields = {'j2735.msgCnt', 'j2735.secMark', 'j2735.id', 'frame.time_epoch'}
     
     txFields = get_field_values(txPacket, BSMrequiredFields)
@@ -223,8 +254,7 @@ def matchBSM(txPacket, rxMap, cutoffTime=3):
 
     return findBestMatch(txPacket, matches, cutoffTime)
 
-
-def matchSPAT(txPacket, rxMap, cutoffTime=3):
+def matchSPAT(txPacket, rxMap, cutoffTime=1):
     SPATrequiredFields = {'j2735.id_01', 'j2735.signalGroup', 'j2735.minEndTime_01', 'frame.time_epoch'}
 
     txFields = get_field_values(txPacket, SPATrequiredFields)
@@ -234,8 +264,7 @@ def matchSPAT(txPacket, rxMap, cutoffTime=3):
     key = (make_key(txFields.get('j2735.id_01')), frozenset(zip(groups, times)))
     
     matches = rxMap['19'].get(key, [])
-    return findBestMatch(txPacket, matches, cutoffTime)
-    
+    return findBestMatch(txPacket, matches, cutoffTime)  
 
 def matchMAP(txPacket, rxMap, cutoffTime=0.5):
     MAPrequiredFields = {'j2735.id_01', 'j2735.lat_03', 'j2735.long_01', 'frame.time_epoch'}
@@ -249,27 +278,29 @@ def matchMAP(txPacket, rxMap, cutoffTime=0.5):
     
     return findBestMatch(txPacket, matches, cutoffTime)
     
+
 # Using packet timestamps, find the best possible match for the given Tx packet if multiple matches exist
 def findBestMatch(txPacket, matches, cutoffTime):
-    if matches:
-        txTime = float(txPacket.find(".//field[@name='frame.time_epoch']").get('show'))
-        minDiff = cutoffTime
-        bestMatch = None
-        
-        for packet in matches:
-            rxTime = float(packet.find(".//field[@name='frame.time_epoch']").get('show'))
-            diff = rxTime - txTime
-            
-            if(diff > 0) and (diff < cutoffTime) and (diff < minDiff):
-                minDiff = diff
-                bestMatch = packet
-        
-        if(bestMatch is not None):
-            return (bestMatch, minDiff)
-        else:
-            return None
-    else:
+    if not matches:
         return None
+
+    txTime = float(txPacket.find(".//field[@name='frame.time_epoch']").get('show'))
+    minAbsDiff = cutoffTime
+    bestMatch = None
+    bestDiff = None
+
+    for packet in matches:
+        rxTime = float(packet.find(".//field[@name='frame.time_epoch']").get('show'))
+        diff = rxTime - txTime
+
+        if abs(diff) < minAbsDiff:
+            minAbsDiff = abs(diff)
+            bestMatch = packet
+            bestDiff = diff        # signed, not absolute
+
+    if bestMatch is not None:
+        return (bestMatch, bestDiff)
+    return None
 
 def calculatePER(txPackets, windowSize=100):
     if(len(txPackets) == 0):
@@ -283,7 +314,7 @@ def calculatePER(txPackets, windowSize=100):
         losses = sum(1 for _, received in window if received == False)
         per = losses / windowSize * 100
         windows.append((windowTime, per))
-        print(f"  t={windowTime:.3f}  PER={per:.1f}%  ({losses}/{windowSize} lost)")
+        # print(f"  t={windowTime:.3f}  PER={per:.1f}%  ({losses}/{windowSize} lost)")
     
     timeList, perList = map(list, zip(*windows))
     per_df = pd.DataFrame({'time': timeList, 'PER': perList})
@@ -302,7 +333,7 @@ def calculatePER(txPackets, windowSize=100):
     ax.set_ylim(0, 100)
     ax.legend()
     plt.tight_layout()
-
+    ax.set_rasterized(True)
     return fig, perList
     
 
@@ -313,7 +344,10 @@ def calculateLatency(packetMatches):
     TYPE_NAMES = {'18': 'MAP', '19': 'SPAT', '20': 'BSM', '31': 'TIM'}
     latenciesByType = {'18': [], '19': [], '20': [], '31': []}
     latency_data = []
+    negativeFlag = False
     for (txPacket, _, latency, txType) in packetMatches:
+        if latency < 0:
+            negativeFlag = True
         latenciesByType[txType].append(latency * 1000) 
 
     for msgId, latencies in latenciesByType.items():
@@ -337,11 +371,13 @@ def calculateLatency(packetMatches):
     ax.set_title("Latency CDF by message type")
     ax.set_xlabel('Latency (ms)')
     ax.set_ylabel('Cumulative proportion')
-    return fig, latenciesByType
+    ax.set_rasterized(True)
+    return fig, latenciesByType, negativeFlag
 
 def calculateIPG(packetTimestamps):
     TYPE_NAMES = {'18': 'MAP', '19': 'SPAT', '20': 'BSM', '31': 'TIM'}
     ipg_data = []
+    outlierWarnIPG = False
     for msgType, packets in packetTimestamps.items():
         if len(packets) < 2:
             continue
@@ -349,7 +385,11 @@ def calculateIPG(packetTimestamps):
             timestamps = np.array(packets)
             timestamps.sort()
             gaps = np.diff(timestamps) * 1000
-            for packetGap in gaps:
+            filteredGaps = gaps[gaps < 3000]
+            if len(filteredGaps) < len(gaps):
+                print("Gap outliers found, removed from graph data")
+                outlierWarnIPG = True
+            for packetGap in filteredGaps:
                 ipg_data.append({'IPG': packetGap, 'type': TYPE_NAMES.get(msgType)})
             print(f"\n--- IPG Stats for message type {msgType}: ---")
             print(f"  Mean   : {np.mean(gaps):.3f} ms")
@@ -365,7 +405,8 @@ def calculateIPG(packetTimestamps):
     ax.set_title("Inter-packet Gap (IPG) by message type")
     ax.set_xlabel('IPG (ms)')
     ax.set_ylabel('Cumulative proportion')
-    return fig
+    ax.set_rasterized(True)
+    return fig, outlierWarnIPG
 
 def calculateThroughput(packetLengths, winSeconds=5):
     if not packetLengths:
@@ -412,7 +453,63 @@ def calculateThroughput(packetLengths, winSeconds=5):
     # plt.show()
 
 
-def buildStatsText(packetMatches, packetLosses, latenciesByType,
+def plotMap(points, rxLat, rxLng, outputPath='map_trail.html'):
+    
+    if not points:
+        print("No positioned packets, aborting map creation")
+        return
+
+    m = folium.Map(location=[rxLat, rxLng], zoom_start=15)
+
+    lastMatchedIdx = None
+    for i in range(len(points) - 1, -1, -1):
+        if points[i][3]:          # matched flag
+            lastMatchedIdx = i
+            break
+    points = points[:lastMatchedIdx+1]
+
+    startLat, startLong = points[0][1], points[0][2]
+    endLat, endLong     = points[-1][1], points[-1][2]
+    
+    folium.Marker(
+        [startLat, startLong], popup='Start',
+        icon=folium.Icon(color='green', icon='play', prefix='fa')
+    ).add_to(m)
+
+    folium.Marker(
+        [endLat, endLong], popup='End',
+        icon=folium.Icon(color='red', icon='stop', prefix='fa')
+    ).add_to(m)
+
+    folium.Marker([rxLat, rxLng], popup='Receiver', icon=folium.Icon(color='blue', icon='tower-broadcast', prefix='fa')
+    ).add_to(m)
+
+    for (_, lat, lng, matched) in points:
+        folium.CircleMarker(
+            location=[lat, lng],
+            radius=3,
+            color='green' if matched else 'red',
+            fill=True,
+            fill_opacity=0.7,
+        ).add_to(m)
+    m.save(outputPath)
+
+def trimTrailingLosses(timeline):
+    """Remove trailing losses — assumes receiver powered off at capture end."""
+    lastMatchedIdx = None
+    for i in range(len(timeline) - 1, -1, -1):
+        if timeline[i][1]:          # received flag (True = matched)
+            lastMatchedIdx = i
+            break
+
+    if lastMatchedIdx is None:
+        return timeline, 0          # nothing matched — trim nothing
+
+    trimmed = timeline[:lastMatchedIdx + 1]
+    removed = len(timeline) - len(trimmed)
+    return trimmed, removed
+
+def buildStatsText(packetMatches, packetLosses, latenciesByType, negativeFlag, outlierWarnIPG, 
                    perValues, rxTimestamps, throughputs):
     lines = []
     TYPE_NAMES = {'18': 'MAP', '19': 'SPAT', '20': 'BSM', '31': 'TIM'}
@@ -433,6 +530,13 @@ def buildStatsText(packetMatches, packetLosses, latenciesByType,
 
     log()
     log("=== Latency Stats ===")
+
+    if negativeFlag is True:
+        log()
+        log("Warning: Negative latency values detected.")
+        log("This usually occurs when your devices arent time synchronized.")
+        log("As a result, some or all of the latency data may be inaccurate.")
+
     for msgId, latencies in latenciesByType.items():
         if not latencies:
             continue
@@ -449,6 +553,13 @@ def buildStatsText(packetMatches, packetLosses, latenciesByType,
 
     log()
     log("=== IPG Stats ===")
+    
+    if outlierWarnIPG is True:
+        log()
+        log("Warning: Extreme IPG values detected.")
+        log("This may indicate a loss of multiple packets.")
+        log("Check the IPG and PER stats and the PER graph for more info.")
+    
     for msgId, timestamps in rxTimestamps.items():
         if len(timestamps) < 2:
             continue
@@ -495,6 +606,10 @@ def saveReport(figures, statsText, outputPath='v2x_report.pdf'):
             pdf.savefig(f)
             plt.close(f)
 
+    wordoutput = 'v2x_report.docx'
+    cv = Converter(outputPath)
+    cv.convert(wordoutput)
+    cv.close()
     print(f"\nReport saved to {outputPath}")
 
 if __name__ == "__main__":
