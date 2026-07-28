@@ -6,37 +6,46 @@ import sys
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.backends.backend_pdf import PdfPages
-from pdf2docx import parse, Converter
+from pdf2docx import Converter
 import folium
+from geopy.distance import geodesic
+import argparse
 
 def main():
-    # Attempt to grab the files from Tx and Rx
-    txFile = None
-    rxFile = None
-    try:
-        args = sys.argv[1:]
+    # Parse all given arguments
+    parser = argparse.ArgumentParser(
+        description="C-V2X performance analyzer — matches Tx/Rx PDML captures and reports metrics.")
+    parser.add_argument("tx_file", help="Transmitted PDML file")
+    parser.add_argument("rx_file", help="Received PDML file")
+    parser.add_argument("address", nargs="?", default=None,
+                        help="Tx MAC or IPv6 address — only for combined Tx files")
+    parser.add_argument("--rx-location", default=None,
+                        help="Receiver coordinates as LAT,LON (enables map + distance graph)")
+    args = parser.parse_args()
 
-        if len(args) == 2:
-        # pure Tx file, no MAC needed
-            txFile = args[0]
-            rxFile = args[1]
+    # Parse location data if given
+    rxLat = rxLng = None
+    if args.rx_location:
+        try:
+            rxLat, rxLng = map(float, args.rx_location.split(","))
+        except ValueError:
+            print("Error: --rx-location must be two numbers as LAT,LON (e.g. 39.13,-77.21)")
+            sys.exit(1)
+    spatialEnabled = rxLat is not None
 
-        elif len(args) == 3:
-        # combined Tx file, filter by MAC
-            txList, _ = separateByAddress(etree.parse(args[0]).getroot(), args[2])
-            rxFile = args[1]
-
-    except IndexError:
-       print("Error: Please specify a pdml file for both a transmitter and a receiver, and a MAC or IPv6 address, if applicable.")
-       sys.exit(1)
-    
-    print("Parsing Rx File...")
-    rxTree = etree.parse(rxFile)
-    print("Done!")
-    if txFile:
+    # Load the Tx packets, filtering by address if one was given
+    if args.address:
         print("Parsing Tx File...")
-        txList = list(etree.parse(txFile).getroot())
+        txList, _ = separateByAddress(etree.parse(args.tx_file).getroot(), args.address)
         print("Done!")
+    else:
+        print("Parsing Tx File...")
+        txList = list(etree.parse(args.tx_file).getroot())
+        print("Done!")
+
+    print("Parsing Rx File...")
+    rxTree = etree.parse(args.rx_file)
+    print("Done!")
     print("Building Rx map...")
     rxMap = buildRxMap(rxTree.getroot())
     print("Done!")
@@ -45,18 +54,18 @@ def main():
 
     # Get initial characteristics from each packet
     initialReqs = {'frame.len', 'frame.time_delta_displayed', 'frame.time_epoch', 'frame.number', 'j2735.messageId', 'j2735.long_01', 'j2735.lat_03'}
-    
-    # Iteration Matching Test
+
+    # Iteration of Tx packets
     for packet in txList:
+
         # Obtain necessary starting fields from Tx packet
         txFields = get_field_values(packet, initialReqs)
         txType = txFields.get('j2735.messageId')
         if txType is None:
             continue
         matchResult = None
-        
+
         # Compare txType with each currently supported message ID
-        
         if txType == '18':
             matchResult = matchMAP(packet, rxMap)
         elif txType == '19':
@@ -65,83 +74,90 @@ def main():
             matchResult = matchBSM(packet, rxMap)
         elif txType == '31':
             matchResult = matchTIM(packet, rxMap)
-        
+
         # If there is no packet match found, the Tx packet is considered dropped
         if matchResult is None:
             packetLosses.append(packet)
+
         # Match found, add the match to a list
         else:
             matchedPacket, latency = matchResult
             packetMatches.append((packet, matchedPacket, latency, txType))
-    
+
     # Data structures for metric calculation
     rxTimestamps = {'18': [], '19': [], '20': [], '31': []}
     packetTimeline = []
     packetLengths = []
     mapPoints = []
+
     # Fill lists with necessary data for metric calculations
     for (packet, matchingPacket, latency, txType) in packetMatches:
         packetFields = get_field_values(packet, initialReqs)
         matchFields = get_field_values(matchingPacket, initialReqs)
 
         packetTimeline.append((float(packetFields['frame.time_epoch']), True))
-        
         rxTimestamps[txType].append(float(matchFields['frame.time_epoch']))
-
         packetLengths.append(((float(matchFields['frame.time_epoch'])), (int(matchFields['frame.len']))))
 
-        lat = packetFields.get('j2735.lat_03')
-        long = packetFields.get('j2735.long_01')
-        if lat is not None and long is not None:
-            lat = float(lat)
-            long = float(long)
+        # If making a map, create a list of points for the map
+        if spatialEnabled:
+            lat = packetFields.get('j2735.lat_03')
+            long = packetFields.get('j2735.long_01')
+            if lat is not None and long is not None:
+                lat = float(lat) / 1e7
+                long = float(long) / 1e7
+                mapPoints.append((float(packetFields['frame.time_epoch']), lat, long, True))
 
-            lat /= 1e7
-            long /= 1e7
-            mapPoints.append((float(packetFields['frame.time_epoch']), lat, long, True))
-    
     # Packet loss test and more data for PER
     for packet in packetLosses:
         packetFields = get_field_values(packet, initialReqs)
-        
-        # print("Tx packet "+ str(packetFields['frame.number'])+ " was lost")
-        
         packetTimeline.append((float(packetFields['frame.time_epoch']), False))
 
-        lat = packetFields.get('j2735.lat_03')
-        long = packetFields.get('j2735.long_01')
-        if lat is not None and long is not None:
-            lat = float(lat)
-            long = float(long)
+        # If making a map, create a list of points for the map
+        if spatialEnabled:
+            lat = packetFields.get('j2735.lat_03')
+            long = packetFields.get('j2735.long_01')
+            if lat is not None and long is not None:
+                lat = float(lat) / 1e7
+                long = float(long) / 1e7
+                mapPoints.append((float(packetFields['frame.time_epoch']), lat, long, False))
 
-            lat /= 1e7
-            long /= 1e7
-            mapPoints.append((float(packetFields['frame.time_epoch']), lat, long, False))
-
+    # Sort the tx packets (along with their match booleans) by timestamp
     packetTimeline = sorted(packetTimeline)
+
+    # Trim off the packets after the last received one from the timeline
     packetTimeline, trimmedCount = trimTrailingLosses(packetTimeline)
 
     if trimmedCount > 0:
         note = (f"NOTE: {trimmedCount} trailing lost packet(s) removed from analysis "
-            f"(receiver believed powered off at capture end).")
+                f"(receiver believed powered off at capture end).")
         print(note)
-    
-    # Final changes to points for map creation
-    rxLat = 39.13296
-    rxLong = -77.21377
-    mapPoints = sorted(mapPoints, key=lambda p: p[0])
+
+    # Trim packets from map if necessary
+    if spatialEnabled and packetTimeline:
+        cutoffTime = packetTimeline[-1][0]   # last timestamp that survived the trim
+        mapPoints = [p for p in mapPoints if p[0] <= cutoffTime]
 
     # Perform final metric calculation and analysis
-    plotMap(mapPoints, rxLat, rxLong)
-    perFig, perValues  = calculatePER(packetTimeline)
+    perFig, perValues = calculatePER(packetTimeline)
     latFig, latenciesByType, negativeFlag = calculateLatency(packetMatches)
     ipgFig, outlierWarnIPG = calculateIPG(rxTimestamps)
     throughputs = calculateThroughput(packetLengths)
 
+    figs = [perFig, latFig, ipgFig]
+
+    # Spatial outputs only when coordinates were provided
+    if spatialEnabled:
+        mapPoints = sorted(mapPoints, key=lambda p: p[0])
+        plotMap(mapPoints, rxLat, rxLng)
+        distanceFig = plotDistance(mapPoints, rxLat, rxLng)
+        if distanceFig is not None:
+            figs.insert(1, distanceFig)
+
     statsText = buildStatsText(packetMatches, packetLosses, latenciesByType, negativeFlag, outlierWarnIPG,
                                perValues, rxTimestamps, throughputs)
 
-    saveReport([perFig, latFig, ipgFig], statsText)
+    saveReport(figs, statsText)
 
 def separateByAddress(tree, txMac):
     matchesAddress = []
@@ -150,11 +166,13 @@ def separateByAddress(tree, txMac):
     macFields = {'ipv6.src', 'wlan.sa'}
     
     for packet in tree:
+        # Attempts to get a MAC or IP address for each packet
         fields = get_field_values(packet, macFields)
         srcMac = fields.get('ipv6.src') or fields.get('wlan.sa')
         
         if srcMac is None:
             continue
+        # Address match check
         if srcMac.lower() == txMac.lower():
             matchesAddress.append(packet)
         else:
@@ -234,48 +252,53 @@ def get_field_values(packet, requiredFields):
 def matchTIM(txPacket, rxMap, cutoffTime=0.5):
     TIMrequiredFields = {'j2735.msgCnt', 'j2735.lat_03', 'j2735.long_01', 'frame.time_epoch'}
 
+    # Create Tx packet's key
     txFields = get_field_values(txPacket, TIMrequiredFields)
     key = (make_key(txFields.get('j2735.msgCnt')), make_key(txFields.get('j2735.lat_03')), 
             make_key(txFields.get('j2735.long_01')))
 
+    # Look for matches and, if any exist, find the "best match"
     matches = rxMap['31'].get(key, [])
     return findBestMatch(txPacket, matches, cutoffTime)
 
 def matchBSM(txPacket, rxMap, cutoffTime=1):
     BSMrequiredFields = {'j2735.msgCnt', 'j2735.secMark', 'j2735.id', 'frame.time_epoch'}
-    
-    txFields = get_field_values(txPacket, BSMrequiredFields)
 
+    # Create Tx packet's key
+    txFields = get_field_values(txPacket, BSMrequiredFields)
     key = (make_key(txFields.get('j2735.id')), 
            make_key(txFields.get('j2735.msgCnt')), 
            make_key(txFields.get('j2735.secMark')))
-    
-    matches = rxMap['20'].get(key, [])
 
+    # Look for matches and, if any exist, find the "best match"
+    matches = rxMap['20'].get(key, [])
     return findBestMatch(txPacket, matches, cutoffTime)
 
 def matchSPAT(txPacket, rxMap, cutoffTime=1):
     SPATrequiredFields = {'j2735.id_01', 'j2735.signalGroup', 'j2735.minEndTime_01', 'frame.time_epoch'}
 
+    # Create Tx packet's key
     txFields = get_field_values(txPacket, SPATrequiredFields)
     groups = list_check(txFields.get('j2735.signalGroup'))
     times  = list_check(txFields.get('j2735.minEndTime_01'))
-    
     key = (make_key(txFields.get('j2735.id_01')), frozenset(zip(groups, times)))
+
     
+    # Look for matches and, if any exist, find the "best match"
     matches = rxMap['19'].get(key, [])
     return findBestMatch(txPacket, matches, cutoffTime)  
 
 def matchMAP(txPacket, rxMap, cutoffTime=0.5):
     MAPrequiredFields = {'j2735.id_01', 'j2735.lat_03', 'j2735.long_01', 'frame.time_epoch'}
-    
-    txFields = get_field_values(txPacket, MAPrequiredFields)
 
+    # Create Tx packet's key
+    txFields = get_field_values(txPacket, MAPrequiredFields)
     key = (make_key(txFields.get('j2735.id_01')), make_key(txFields.get('j2735.lat_03')), 
            make_key(txFields.get('j2735.long_01')))
+
     
+    # Look for matches and, if any exist, find the "best match"
     matches = rxMap['18'].get(key, [])
-    
     return findBestMatch(txPacket, matches, cutoffTime)
     
 
@@ -302,7 +325,7 @@ def findBestMatch(txPacket, matches, cutoffTime):
         return (bestMatch, bestDiff)
     return None
 
-def calculatePER(txPackets, windowSize=100):
+def calculatePER(txPackets, windowSize=50):
     if(len(txPackets) == 0):
         print("No packets found, aborting PER calculation!")
         return None
@@ -318,13 +341,10 @@ def calculatePER(txPackets, windowSize=100):
     
     timeList, perList = map(list, zip(*windows))
     per_df = pd.DataFrame({'time': timeList, 'PER': perList})
-    per_df['smoothed'] = per_df['PER'].rolling(window=50, min_periods=1).mean()
     fig, ax = plt.subplots(figsize=(12, 5))
     
     sns.lineplot(data=per_df, x='time', y='PER', ax=ax,
-                 linewidth=1, alpha=0.3, label='Raw PER')
-    sns.lineplot(data=per_df, x='time', y='smoothed', ax=ax,
-                 linewidth=2, label='Rolling avg')
+                 linewidth=1, label='Raw PER')
 
 
     ax.set_xlabel('Time (s)')
@@ -493,6 +513,31 @@ def plotMap(points, rxLat, rxLng, outputPath='map_trail.html'):
             fill_opacity=0.7,
         ).add_to(m)
     m.save(outputPath)
+
+def plotDistance(trail, rxLat, rxLng):
+    if not trail:
+        print("Cannot make distance plot due to empty timeline, aborting.")
+        return
+    time0 = trail[0][0]
+    points = []
+    for (t, lat, lon, _) in trail:
+        points.append({
+            'time': t - time0,
+            'distance': geodesic((lat, lon), (rxLat, rxLng)).meters
+        })
+
+    dist_df = pd.DataFrame(points)
+
+    fig, ax = plt.subplots(figsize=(12, 5))
+    sns.lineplot(data=dist_df, x='time', y='distance', ax=ax,
+                 linewidth=1.5, color='tab:blue')
+
+    ax.set_xlabel('Time (s)')
+    ax.set_ylabel('Distance from receiver (m)')
+    ax.set_title('Transmitter distance from receiver over time')
+    plt.tight_layout()
+    ax.set_rasterized(True)
+    return fig
 
 def trimTrailingLosses(timeline):
     """Remove trailing losses — assumes receiver powered off at capture end."""
