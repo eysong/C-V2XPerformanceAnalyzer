@@ -118,7 +118,7 @@ followed by one graph per page. An example of the first page is something like t
 
 
 
-## Notes and Limitations
+## Notes
 - Clock synchronization between the two device is required for accurate absolute latency readings. If negative values are detected as a result of clock desynchronization, a warning is given to the user in the console and the report. Regardless, the range of the latency values is still meaningful.
 
 - Trailing lost packets after the last received packet are treated as the receiver having stopped or turned off. They are not present in the analysis if any are found, and the user is warned of this.
@@ -141,6 +141,5 @@ followed by one graph per page. An example of the first page is something like t
 
 - GUI Design: Sedric Su
    - https://github.com/eysong/C-V2XMsgExchangeAssessingTool
-   - https://github.com/Physi12
 
 ---

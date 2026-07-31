@@ -465,7 +465,7 @@ def calculateThroughput(packetLengths, winSeconds=5):
     while winStart + winSeconds <= tEnd:
         winEnd = winStart + winSeconds
         bytes = sum(length for time, length in packetLengths if winStart <= time < winEnd)
-        throughputs.append((bytes * 8) / winSeconds)
+        throughputs.append((bytes * 8) / winSeconds /1000) # Kilobits per second
         windowTimes.append(winStart - tStart)
         winStart += winSeconds
 
@@ -473,9 +473,9 @@ def calculateThroughput(packetLengths, winSeconds=5):
     if throughputs:
         arr = np.array(throughputs)
         print("\n --- Throughput Statistics ---")
-        print(f"  Mean : {np.mean(arr):.2f} bps")
-        print(f"  Max  : {np.max(arr):.2f} bps")
-        print(f"  Min  : {np.min(arr):.2f} bps")
+        print(f"  Mean : {np.mean(arr):.2f} Kbps")
+        print(f"  Max  : {np.max(arr):.2f} Kbps")
+        print(f"  Min  : {np.min(arr):.2f} Kbps")
     
     return throughputs
 
@@ -655,9 +655,9 @@ def buildStatsText(packetMatches, packetLosses, latenciesByType, negativeFlag, o
         arr = np.array(throughputs)
         log()
         log("=== Throughput Stats ===")
-        log(f"  Mean : {np.mean(arr):.2f} bps")
-        log(f"  Max  : {np.max(arr):.2f} bps")
-        log(f"  Min  : {np.min(arr):.2f} bps")
+        log(f"  Mean : {np.mean(arr):.2f} Kbps")
+        log(f"  Max  : {np.max(arr):.2f} Kbps")
+        log(f"  Min  : {np.min(arr):.2f} Kbps")
 
     return '\n'.join(lines)
 
