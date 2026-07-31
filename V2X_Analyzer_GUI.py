@@ -53,12 +53,12 @@ class V2XAnalyzerGUI:
         root.columnconfigure(2, weight=0)
         root.rowconfigure(9, weight=2)
 
-        # ---- Title ----
+        # Title
         tk.Label(root, text="C-V2X Network Performance Analyzer",
                  font=("Calibri", 17), bg="#e9f8e3").grid(
                  row=0, column=0, columnspan=3, padx=8, pady=12)
 
-        # ---- Transmitted file row ----
+        # Transmitted file row
         tk.Label(root, text="Transmitted PDML", font=("Calibri", 12), bg="#e9f8e3").grid(
             row=1, column=0, padx=8, pady=8, sticky="w")
         tk.Entry(root, textvariable=self.tx_path, width=55).grid(
@@ -67,7 +67,7 @@ class V2XAnalyzerGUI:
         self.browse_tx.grid(row=1, column=2, padx=8, pady=8, sticky="w")
         self.add_hover_effect(self.browse_tx, "#f0f0f0", "#E2E2E2")
 
-        # ---- Received file row ----
+        # Received file row 
         tk.Label(root, text="Received PDML", font=("Calibri", 12), bg="#e9f8e3").grid(
             row=2, column=0, padx=8, pady=8, sticky="w")
         tk.Entry(root, textvariable=self.rx_path, width=55).grid(
@@ -76,7 +76,7 @@ class V2XAnalyzerGUI:
         self.browse_rx.grid(row=2, column=2, padx=8, pady=8, sticky="w")
         self.add_hover_effect(self.browse_rx, "#f0f0f0", "#E2E2E2")
 
-        # ---- Optional address row ----
+        # optional address row 
         tk.Label(root, text="Tx MAC / IPv6\n(optional)", font=("Calibri", 11), bg="#e9f8e3",
                  justify="left").grid(row=3, column=0, padx=8, pady=8, sticky="w")
         tk.Entry(root, textvariable=self.address, width=55).grid(
@@ -84,14 +84,14 @@ class V2XAnalyzerGUI:
         tk.Label(root, text="Only for combined Tx files", font=("Calibri", 9),
                  fg="#555555", bg="#e9f8e3").grid(row=4, column=1, padx=4, sticky="w")
 
-        # ---- Spatial analysis checkbox ----
+        # spatial analysis checkbox
         self.spatial_check = tk.Checkbutton(
             root, text="Generate trail map + distance graph", font=("Calibri", 11),
             bg="#e9f8e3", variable=self.spatial_enabled, command=self.toggle_spatial,
             activebackground="#e9f8e3")
         self.spatial_check.grid(row=5, column=0, columnspan=3, padx=8, pady=(12, 0), sticky="w")
 
-        # coordinate fields — hidden until the box is checked
+        # coordinate fields
         self.coord_frame = tk.Frame(root, bg="#e9f8e3")
         tk.Label(self.coord_frame, text="Receiver Lat:", font=("Calibri", 10),
                  bg="#e9f8e3").grid(row=0, column=0, padx=(24, 4))
@@ -102,34 +102,34 @@ class V2XAnalyzerGUI:
         self.coord_frame.grid(row=6, column=0, columnspan=3, sticky="w", pady=(0, 4))
         self.coord_frame.grid_remove()   # start hidden
 
-        # ---- Run button ----
+        # run button
         self.run_btn = tk.Button(
             root, text="Run Analysis", font=("Calibri", 16, "bold"),
             command=self.run_analysis, bg="#005EA2", fg="white", height=1, width=16)
         self.run_btn.grid(row=7, column=0, columnspan=3, pady=12)
         self.add_hover_effect(self.run_btn, "#005EA2", "#1A4480")
 
-        # ---- Output box ----
+        # output box
         tk.Label(root, text="Result:", font=("Calibri", 12), bg="#e9f8e3").grid(
             row=8, column=0, padx=8, sticky="w")
         self.output_box = scrolledtext.ScrolledText(root, wrap=tk.WORD, width=90, height=22)
         self.output_box.grid(row=9, column=0, columnspan=3, rowspan=2, padx=8, pady=4, sticky="nsew")
         self.output_box.config(background="#f3f5fa")
 
-        # ---- Bottom buttons ----
+        # bottom buttons
         self.open_btn = tk.Button(root, text="Open Report Folder", command=self.open_output_folder,
                                   state=tk.DISABLED)
         self.open_btn.grid(row=11, column=0, columnspan=3, pady=8)
         self.add_hover_effect(self.open_btn, "#f0f0f0", "#F9F9F9")
 
-    # ---------- spatial toggle ----------
+    # spatial toggle
     def toggle_spatial(self):
         if self.spatial_enabled.get():
             self.coord_frame.grid()       # show coordinate fields
         else:
             self.coord_frame.grid_remove()  # hide them
 
-    # ---------- file pickers ----------
+    # file pickers
     def browse_tx(self):
         path = filedialog.askopenfilename(
             filetypes=[("PDML files", "*.pdml"), ("All files", "*.*")])
@@ -142,7 +142,6 @@ class V2XAnalyzerGUI:
         if path:
             self.rx_path.set(path)
 
-    # ---------- run ----------
     def run_analysis(self):
         tx = self.tx_path.get().strip()
         rx = self.rx_path.get().strip()
@@ -160,12 +159,12 @@ class V2XAnalyzerGUI:
                                  "Edit MAIN_SCRIPT at the top of this file to point to your analyzer.")
             return
 
-        # build the command — -u forces unbuffered output so progress streams live
+        # -u forces unbuffered output so progress streams live
         cmd = [sys.executable, "-u", MAIN_SCRIPT, tx, rx]
         if addr:
             cmd.append(addr)
 
-        # spatial analysis — validate coordinates before passing them through
+        # spatial analysis: validate coordinates before passing them through
         if self.spatial_enabled.get():
             lat = self.rx_lat.get().strip()
             lon = self.rx_lon.get().strip()
@@ -233,7 +232,7 @@ class V2XAnalyzerGUI:
                 "Check that the analyzer writes its report to the working directory.")
         self.output_box.see(tk.END)
 
-    # ---------- open folder ----------
+    # open folder
     def open_output_folder(self):
         if not self.last_output_dir or not os.path.isdir(self.last_output_dir):
             messagebox.showinfo("No folder", "Run an analysis first.")

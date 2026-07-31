@@ -307,7 +307,10 @@ def findBestMatch(txPacket, matches, cutoffTime):
     if not matches:
         return None
 
+    # Get transmit packet's timestamp
     txTime = float(txPacket.find(".//field[@name='frame.time_epoch']").get('show'))
+
+    # Anything higher than cutoffTime is ignored
     minAbsDiff = cutoffTime
     bestMatch = None
     bestDiff = None
@@ -316,10 +319,11 @@ def findBestMatch(txPacket, matches, cutoffTime):
         rxTime = float(packet.find(".//field[@name='frame.time_epoch']").get('show'))
         diff = rxTime - txTime
 
+        # If true, a better match has been found
         if abs(diff) < minAbsDiff:
             minAbsDiff = abs(diff)
             bestMatch = packet
-            bestDiff = diff        # signed, not absolute
+            bestDiff = diff 
 
     if bestMatch is not None:
         return (bestMatch, bestDiff)
@@ -331,6 +335,8 @@ def calculatePER(txPackets, windowSize=50):
         return None
     windows = []
     initialTime = txPackets[0][0]
+    
+    # For each window, find the time of first packet in window and the number of packets lost
     for i in range(len(txPackets)-windowSize + 1):
         window = txPackets[i : i + windowSize]
         windowTime = window[-1][0] - initialTime
@@ -339,10 +345,12 @@ def calculatePER(txPackets, windowSize=50):
         windows.append((windowTime, per))
         # print(f"  t={windowTime:.3f}  PER={per:.1f}%  ({losses}/{windowSize} lost)")
     
+    # Pandas dataframe packing
     timeList, perList = map(list, zip(*windows))
     per_df = pd.DataFrame({'time': timeList, 'PER': perList})
     fig, ax = plt.subplots(figsize=(12, 5))
-    
+
+    # Seaborn graphing
     sns.lineplot(data=per_df, x='time', y='PER', ax=ax,
                  linewidth=1, label='Raw PER')
 
@@ -365,11 +373,14 @@ def calculateLatency(packetMatches):
     latenciesByType = {'18': [], '19': [], '20': [], '31': []}
     latency_data = []
     negativeFlag = False
+
+    # Search for negative latency values, then scale to ms and sort by message type
     for (txPacket, _, latency, txType) in packetMatches:
         if latency < 0:
             negativeFlag = True
         latenciesByType[txType].append(latency * 1000) 
 
+    # For each message type, print data and create data for dataFrame
     for msgId, latencies in latenciesByType.items():
         if len(latencies) == 0:
             continue
@@ -384,9 +395,12 @@ def calculateLatency(packetMatches):
         print(f"  Min    : {np.min(latencyNP):.3f} ms")
         print(f"  Max    : {np.max(latencyNP):.3f} ms")
         print(f"  Std Dev: {np.std(latencyNP):.3f} ms")
-    
+
+    # DataFrame for seaborn graph
     latency_df = pd.DataFrame(latency_data)
     fig, ax = plt.subplots(figsize=(8, 5))
+
+    # Seaborn graph
     sns.ecdfplot(data=latency_df, x='latency', hue='type', ax=ax, linewidth=2)
     ax.set_title("Latency CDF by message type")
     ax.set_xlabel('Latency (ms)')
@@ -398,6 +412,8 @@ def calculateIPG(packetTimestamps):
     TYPE_NAMES = {'18': 'MAP', '19': 'SPAT', '20': 'BSM', '31': 'TIM'}
     ipg_data = []
     outlierWarnIPG = False
+
+    # Sort IPG by message type
     for msgType, packets in packetTimestamps.items():
         if len(packets) < 2:
             continue
@@ -405,12 +421,15 @@ def calculateIPG(packetTimestamps):
             timestamps = np.array(packets)
             timestamps.sort()
             gaps = np.diff(timestamps) * 1000
+
+            # Filter out any gaps greater than 3 seconds
             filteredGaps = gaps[gaps < 3000]
             if len(filteredGaps) < len(gaps):
-                print("Gap outliers found, removed from graph data")
+                print("Gap outliers found (> 3 seconds), removed from graph data")
                 outlierWarnIPG = True
             for packetGap in filteredGaps:
                 ipg_data.append({'IPG': packetGap, 'type': TYPE_NAMES.get(msgType)})
+
             print(f"\n--- IPG Stats for message type {msgType}: ---")
             print(f"  Mean   : {np.mean(gaps):.3f} ms")
             print(f"  Median : {np.median(gaps):.3f} ms")
@@ -419,7 +438,10 @@ def calculateIPG(packetTimestamps):
             print(f"  Min    : {np.min(gaps):.3f} ms")
             print(f"  Max    : {np.max(gaps):.3f} ms")
             print(f"  Std Dev: {np.std(gaps):.3f} ms")
+    # DataFrame packing
     ipg_df = pd.DataFrame(ipg_data)
+
+    # Graph creation
     fig, ax = plt.subplots(figsize=(8, 5))
     sns.ecdfplot(data=ipg_df, x='IPG', hue='type', ax=ax, linewidth=2)
     ax.set_title("Inter-packet Gap (IPG) by message type")
@@ -439,13 +461,15 @@ def calculateThroughput(packetLengths, winSeconds=5):
     throughputs = []
     windowTimes = []
 
+    # Find bytes received in each time window and convert to bits per second
     while winStart + winSeconds <= tEnd:
         winEnd = winStart + winSeconds
         bytes = sum(length for time, length in packetLengths if winStart <= time < winEnd)
         throughputs.append((bytes * 8) / winSeconds)
         windowTimes.append(winStart - tStart)
         winStart += winSeconds
-    
+
+    # Display statistics
     if throughputs:
         arr = np.array(throughputs)
         print("\n --- Throughput Statistics ---")
@@ -479,8 +503,10 @@ def plotMap(points, rxLat, rxLng, outputPath='map_trail.html'):
         print("No positioned packets, aborting map creation")
         return
 
+    # Create map
     m = folium.Map(location=[rxLat, rxLng], zoom_start=15)
 
+    # Find last matched packet, and filter out all others after it
     lastMatchedIdx = None
     for i in range(len(points) - 1, -1, -1):
         if points[i][3]:          # matched flag
@@ -490,20 +516,24 @@ def plotMap(points, rxLat, rxLng, outputPath='map_trail.html'):
 
     startLat, startLong = points[0][1], points[0][2]
     endLat, endLong     = points[-1][1], points[-1][2]
-    
+
+    # Starting point marker
     folium.Marker(
         [startLat, startLong], popup='Start',
         icon=folium.Icon(color='green', icon='play', prefix='fa')
     ).add_to(m)
 
+    # End point marker
     folium.Marker(
         [endLat, endLong], popup='End',
         icon=folium.Icon(color='red', icon='stop', prefix='fa')
     ).add_to(m)
 
+    # Receiver marker
     folium.Marker([rxLat, rxLng], popup='Receiver', icon=folium.Icon(color='blue', icon='tower-broadcast', prefix='fa')
     ).add_to(m)
 
+    # Packet markers (green if matched, red if not)
     for (_, lat, lng, matched) in points:
         folium.CircleMarker(
             location=[lat, lng],
@@ -520,12 +550,15 @@ def plotDistance(trail, rxLat, rxLng):
         return
     time0 = trail[0][0]
     points = []
+
+    # Append time and distance from receiver to list of points
     for (t, lat, lon, _) in trail:
         points.append({
             'time': t - time0,
             'distance': geodesic((lat, lon), (rxLat, rxLng)).meters
         })
 
+    # DataFrame and seaborn graph
     dist_df = pd.DataFrame(points)
 
     fig, ax = plt.subplots(figsize=(12, 5))
@@ -540,13 +573,12 @@ def plotDistance(trail, rxLat, rxLng):
     return fig
 
 def trimTrailingLosses(timeline):
-    """Remove trailing losses — assumes receiver powered off at capture end."""
     lastMatchedIdx = None
     for i in range(len(timeline) - 1, -1, -1):
         if timeline[i][1]:          # received flag (True = matched)
             lastMatchedIdx = i
             break
-
+    
     if lastMatchedIdx is None:
         return timeline, 0          # nothing matched — trim nothing
 
