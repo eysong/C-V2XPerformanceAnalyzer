@@ -1,5 +1,4 @@
 from lxml import etree
-import time
 import pandas as pd
 import seaborn as sns
 import sys
@@ -29,7 +28,7 @@ def main():
         try:
             rxLat, rxLng = map(float, args.rx_location.split(","))
         except ValueError:
-            print("Error: --rx-location must be two numbers as LAT,LON (e.g. 39.13,-77.21)")
+            print("Error: --rx-location must be two numbers as LAT,LON (e.g. 30.00,-50.00)")
             sys.exit(1)
     spatialEnabled = rxLat is not None
 
